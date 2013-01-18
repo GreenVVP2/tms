@@ -5,6 +5,9 @@ Public Const idAppointmentInProgressProperty = "appointmentEntryID"
 Public Const endWorkTime = "17:00:00"
 Public Const endWorkTimeMax = "23:00:00"
 Public Const idTaskInAppointment = "taskEntryID"
+' Необходимо создать заметку, найти её EntryId и заменить ниже.
+' Найти с помощью отладки EntryId Application.GetNamespace("MAPI").GetDefaultFolder(olFolderContacts).Items
+Public Const noteEntryID = "00000000AB47E344241E8B4FBF655870D2432CF907007114BF7C467D8D49880B8531D4C95A5A0000000002760000F40C8A0FF820264AAE328DE7A10CF74600004D1047060000"
 
 
 ' Проверяет может ли быть объект задачей
@@ -92,7 +95,7 @@ Public Function getItemFromID(entryIdItem As String) As Object
     Exit Function
 
 errorItemNotFound:
-        getItemFromID = Nothing
+
         Exit Function
 
 End Function
@@ -118,6 +121,38 @@ Public Sub stopTaskInProgress()
     
 End Sub
 
+' Завершает задачу
+Public Sub completeTask(obj As Object)
+
+    Dim entryIdForTaskInProgress As String
+    Dim appointmentEntryID As String
+    
+    If obj Is Nothing Then
+        MsgBox "Объект не передан"
+        Exit Sub
+    End If
+    
+    ' Убираем галку Выполняется
+    Call tms.setUserProperty(obj, "Выполняется", False)
+    
+    ' проверим текущая выполняемая задача это или нет
+    ' получим идентификатор выполняемой задачи
+    entryIdForTaskInProgress = tms.getEntryIdForTaskInProgress()
+    
+    If entryIdForTaskInProgress = obj.entryId Then
+        ' если текущая остановим её
+        ' очистим идентификатор выполняемой задачи
+        Call tms.saveEntryIdForTaskInProgress("")
+        
+        ' получаем идентификатор встречи
+        appointmentEntryID = tms.getUserProperty(obj, tms.idAppointmentInProgressProperty)
+        
+        ' делаем время окончания встречи на сейчас
+        Call tms.stopAppointmentByEntryId(appointmentEntryID)
+        
+    End If
+
+End Sub
 ' Приостанавливает работу задачи
 Public Sub stopTask(obj As Object)
     
@@ -127,6 +162,9 @@ Public Sub stopTask(obj As Object)
         MsgBox "Объект не передан"
         Exit Sub
     End If
+    
+    ' Убираем галку Выполняется
+    Call tms.setUserProperty(obj, "Выполняется", False)
     
     ' Меняем статус на Отложена
     Call tms.setStatus(obj, olTaskDeferred)
@@ -167,9 +205,7 @@ Public Sub saveGlobalProperty(propName As String, propValue As String)
     Dim propNameFull As String
     Dim objNote As NoteItem
 
-    noteEntryID = "00000000AB47E344241E8B4FBF655870D2432CF907007114BF7C467D8D49880B8531D4C95A5A0000000002760000F40C8A0FF820264AAE328DE7A10CF74600004D1047060000"
-    
-    Set objNote = tms.getItemFromID(noteEntryID)
+    Set objNote = tms.getItemFromID(tms.noteEntryID)
   
     If objNote Is Nothing Then
         MsgBox "Заметка для глобальных переменных не создана"
@@ -192,9 +228,7 @@ Public Function getGlobalProperty(propName As String)
     Dim propNameFull As String
     Dim objNote As NoteItem
 
-    noteEntryID = "00000000AB47E344241E8B4FBF655870D2432CF907007114BF7C467D8D49880B8531D4C95A5A0000000002760000F40C8A0FF820264AAE328DE7A10CF74600004D1047060000"
-    
-    Set objNote = tms.getItemFromID(noteEntryID)
+    Set objNote = tms.getItemFromID(tms.noteEntryID)
   
     If objNote Is Nothing Then
         MsgBox "Заметка для глобальных переменных не создана"
@@ -238,13 +272,23 @@ End Function
 ' Сохраняет пользовательское поле в объект
 Public Sub setUserProperty(obj As Object, propertyName As String, propertyValue As String)
      
-     Dim userProperty As userProperty
-     
-     ' ищем свойство
+    Dim userProperty As userProperty
+    Dim propertyType As UserDefinedProperty
+ 
+    ' ищем свойство
      Set userProperty = obj.UserProperties.Find(propertyName)
     ' если нет то добавим
     If userProperty Is Nothing Then
-        Set userProperty = obj.UserProperties.Add(propertyName, olText)
+    
+        Set propertyType = Application.GetNamespace("MAPI").GetDefaultFolder(olFolderToDo).UserDefinedProperties.Find(propertyName)
+     
+        If propertyType Is Nothing Then
+           MsgBox "Свойство не определено на уровне папки"
+           Exit Sub
+        End If
+    
+        Set userProperty = obj.UserProperties.Add(propertyName, propertyType.Type)
+        
     End If
 
     userProperty.Value = propertyValue
@@ -310,6 +354,7 @@ Public Function createAppointment(obj As Object) As String
         .ReminderPlaySound = False
         .Importance = obj.Importance
         .BusyStatus = olBusy
+        .Sensitivity = olPrivate
     End With
     
     ' сохраним идентификатор задачи во встрече
@@ -327,6 +372,9 @@ End Function
 Public Sub startTask(obj As Object)
 
     Dim appointmentEntryID As String
+
+    ' Убираем галку Выполняется
+    Call tms.setUserProperty(obj, "Выполняется", True)
 
     ' ставим статус в работе
     Call tms.setStatus(obj, olTaskInProgress)
@@ -361,4 +409,95 @@ Sub createNoteForGlobalProperties(ForNothing)
     
     objNote.Save
     
+End Sub
+
+' Ищет незавершенные задачи
+Public Function getNotCompletedItems() As Items
+
+    Dim filterNotCompletedTasks As String
+    ' Ищем задачи у которых не стоит флаг Завершена и Пустая дата завершения
+    filterNotCompletedTasks = "@SQL=""http://schemas.microsoft.com/mapi/id/{00062003-0000-0000-C000-000000000046}/810f0040"" Is Null And ""http://schemas.microsoft.com/mapi/proptag/0x10910040"" Is Null"
+    Set getNotCompletedItems = Application.GetNamespace("MAPI").GetDefaultFolder(olFolderToDo).Items.Restrict(filterNotCompletedTasks)
+
+End Function
+
+
+Public Sub onItemChange(Item As Object)
+
+    Dim flagStatus
+    Dim taskStatus
+    Dim taskComplete
+    'Dim propertyChema As String
+    
+    'propertyChema = "http://schemas.microsoft.com/mapi/id/{00062003-0000-0000-C000-000000000046}/810f0040"
+    
+    ' статус флага
+    flagStatus = tms.getUserProperty(Item, "Выполняется")
+    ' статус задачи
+    taskStatus = tms.getStatus(Item)
+    ' Дата выполнения
+    ' taskComplete = Item.PropertyAccessor.GetProperty(propertyChema)
+    
+    ' сравним статус задачи и значение флага, если не соответствуют - значит нажали на флаг
+    ' если менять статус вручную то будет некорректно работать - точнее он не даст поменять, а может будет - смотреть
+    
+    ' может быть завершили задачу или чтото поменяли в завершенной задаче
+    If taskStatus = olTaskComplete Then
+        ' Завершили задачу
+        Call tms.completeTask(Item)
+        
+        MsgBox ("Ура! Задача выполнена! :)")
+        Exit Sub
+        
+    End If
+    
+    ' задача выполняется - ничего не делаем
+    If flagStatus = True And taskStatus = olTaskInProgress Then
+        Exit Sub
+    End If
+    
+    ' задача не выполняется - ничего не делаем
+    If flagStatus = False And taskStatus <> olTaskInProgress Then
+        Exit Sub
+    End If
+    
+    ' или запустили путем нажатия на галку или вручную поменяли статус
+    ' галка важнее - запускаем задачу
+    If flagStatus = True And taskStatus <> olTaskInProgress Then
+        ' Останавливаем выполняемую задачу
+        Call tms.stopTaskInProgress
+        ' запустили задачу
+        Call tms.startTask(Item)
+        MsgBox ("Задача выполняется")
+        Exit Sub
+    End If
+    
+    ' или остановили путем нажатия на галку или вручную поменяли статус
+    ' галка важнее - останавливаем задачу
+    If flagStatus = False And taskStatus = olTaskInProgress Then
+        ' остановили задачу
+        Call tms.stopTask(Item)
+        MsgBox ("Задача остановлена")
+        Exit Sub
+    End If
+
+End Sub
+
+Public Sub onPanelModuleSwitch(module As NavigationModule)
+
+    Dim objPane As NavigationPane
+    Set objPane = Application.ActiveExplorer.NavigationPane
+    ' текущий модуль отправляем в конец
+    objPane.CurrentModule.Position = objPane.Modules.Count
+    
+    If module.NavigationModuleType = olModuleMail Then
+        objPane.IsCollapsed = False
+    Else
+        objPane.IsCollapsed = True
+    End If
+    
+    'For Each objModule In objPane.Modules
+    '    objModule.Visible = True
+    'Next
+     
 End Sub
